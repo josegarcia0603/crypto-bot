@@ -1,1 +1,1 @@
-worker: python crypto_trader.py
+worker: python main.py
