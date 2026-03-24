@@ -34,16 +34,27 @@ state = {
 
 # ─── TELEGRAM ─────────────────────
 async def notify(msg):
-    if not TELEGRAM_TOKEN:
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print(f"[LOG] {msg}")
         return
-    async with aiohttp.ClientSession() as s:
-        try:
-            await s.post(
+    try:
+        async with aiohttp.ClientSession() as s:
+            resp = await s.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                data={"chat_id": CHAT_ID, "text": msg}
+                json={
+                    "chat_id": CHAT_ID,
+                    "text": msg,
+                    "parse_mode": "HTML"
+                },
+                timeout=aiohttp.ClientTimeout(total=10)
             )
-        except:
-            pass
+            result = await resp.json()
+            if not result.get("ok"):
+                print(f"[TELEGRAM ERRO] {result}")
+    except asyncio.TimeoutError:
+        print("[TELEGRAM] Timeout ao enviar mensagem")
+    except Exception as e:
+        print(f"[TELEGRAM ERRO] {e}")
 
 # ─── DATA ─────────────────────────
     
