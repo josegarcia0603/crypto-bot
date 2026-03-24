@@ -1,2 +1,7 @@
 python-telegram-bot==20.7
 aiohttp==3.9.3
+numpy
+aiohttp
+scikit-learn
+python-dotenv
+python-binance
