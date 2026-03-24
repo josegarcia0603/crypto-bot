@@ -57,28 +57,31 @@ async def notify(msg):
             "limit": 300
         }) as r:
 
-            data = await r.json()
+            try:
+                data = await r.json()
+            except Exception:
+                raise Exception("Resposta não é JSON válido")
 
-    # 🔴 validação
+    # 🔴 detectar erro da Binance
+    if isinstance(data, dict):
+        raise Exception(f"Erro da Binance: {data}")
+
     if not isinstance(data, list):
-        raise Exception(f"Resposta inválida da Binance: {data}")
-
-    if len(data) == 0:
-        raise Exception("Sem dados recebidos")
+        raise Exception(f"Formato inesperado: {type(data)}")
 
     closes = []
 
     for x in data:
-        if len(x) < 5:
-            continue  # ignora dados inválidos
+        if not isinstance(x, list) or len(x) < 5:
+            continue
 
         try:
             closes.append(float(x[4]))
         except:
             continue
 
-    if len(closes) < 10:
-        raise Exception("Poucos dados válidos")
+    if len(closes) < 20:
+        raise Exception("Dados insuficientes recebidos da Binance")
 
     return np.array(closes)
 
