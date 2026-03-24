@@ -1,204 +1,212 @@
-"""
-AITrader V5 — Multi-Bot Institutional System
-"""
+import asyncio, os, aiohttp, numpy as np
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 
-import asyncio, os, time, aiohttp, hmac, hashlib, logging
-from urllib.parse import urlencode
+# ─── CONFIG ───────────────────────
+BASE = "https://api.binance.com"
+SYMBOL = "BTCUSDT"
 
-BINANCE_API_KEY=os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET_KEY=os.getenv("BINANCE_SECRET_KEY")
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 
-BASE="https://api.binance.com"
-PAIRS=["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT"]
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-logging.basicConfig(level=logging.INFO)
-log=logging.getLogger()
+AUTO_LIVE = os.getenv("AUTO_LIVE", "false").lower() == "true"
 
-# ─── STATE ─────────────────────────
-state={
- "balance":0,
- "initial":0,
- "peak":0,
- "drawdown":0,
- "kill":False,
- "bots":{},
- "open":[]
+STOP_LOSS_PCT = 0.008
+TAKE_PROFIT_PCT = 0.025
+
+BASE_RISK = 0.01
+MAX_DAILY_LOSS = 0.04
+MAX_LOSS_STREAK = 4
+
+SLIPPAGE = 0.0005
+
+state = {
+    "model": None,
+    "position": None,
+    "entry": None,
+    "balance": 1000,
+    "daily_start": 1000,
+    "loss_streak": 0,
+    "daily_pnl": 0
 }
 
-# ─── API ───────────────────────────
-class API:
- def sign(self,p):
-  q=urlencode(p)
-  return hmac.new(BINANCE_SECRET_KEY.encode(),q.encode(),hashlib.sha256).hexdigest()
-
- async def get(self,e,p={},s=False):
-  if s:
-   p["timestamp"]=int(time.time()*1000)
-   p["signature"]=self.sign(p)
-  async with aiohttp.ClientSession() as sess:
-   async with sess.get(BASE+e,params=p,headers={"X-MBX-APIKEY":BINANCE_API_KEY} if s else {}) as r:
-    return await r.json()
-
- async def post(self,e,p):
-  p["timestamp"]=int(time.time()*1000)
-  p["signature"]=self.sign(p)
-  async with aiohttp.ClientSession() as sess:
-   async with sess.post(BASE+e,params=p,headers={"X-MBX-APIKEY":BINANCE_API_KEY}) as r:
-    return await r.json()
-
-api=API()
-
-# ─── INDICATORS ───────────────────
-def ema(d,p):
- k=2/(p+1);e=d[0]
- for x in d: e=x*k+e*(1-k)
- return e
-
-def rsi(c):
- g=[max(c[i]-c[i-1],0) for i in range(1,len(c))]
- l=[max(c[i-1]-c[i],0) for i in range(1,len(c))]
- return 100-(100/(1+(sum(g[-14:])/14)/(sum(l[-14:])/14+1e-6)))
-
-def atr(h,l,c):
- return sum([abs(h[i]-l[i]) for i in range(-14,0)])/14
-
-# ─── AI ───────────────────────────
-class AI:
- def __init__(self):
-  self.w=[0.2]*5; self.lr=0.02
- def p(self,f): return 1/(1+2.7**(-sum(self.w[i]*f[i] for i in range(len(f)))))
- def u(self,f,r):
-  e=r-self.p(f)
-  for i in range(len(self.w)): self.w[i]+=self.lr*e*f[i]
-
-ai=AI()
-
-# ─── FEATURES ─────────────────────
-def feats(c,h,l,v):
- return [
-  rsi(c)/100,
-  ema(c,50)/c[-1],
-  atr(h,l,c),
-  v[-1]/(sum(v[-20:])/20),
-  1 if c[-1]>ema(c,50) else 0
- ]
-
-# ─── BOTS ─────────────────────────
-async def bot_trend(sym,data):
- c=data["c"]; e50=ema(c,50)
- return 1 if c[-1]>e50 else 0
-
-async def bot_mean(sym,data):
- val=rsi(data["c"])
- return 1 if val<30 else 0
-
-async def bot_breakout(sym,data):
- return 1 if data["c"][-1]>max(data["c"][-20:-1]) else 0
-
-BOTS=[bot_trend,bot_mean,bot_breakout]
+# ─── TELEGRAM ─────────────────────
+async def notify(msg):
+    if not TELEGRAM_TOKEN:
+        return
+    async with aiohttp.ClientSession() as s:
+        try:
+            await s.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                data={"chat_id": CHAT_ID, "text": msg}
+            )
+        except:
+            pass
 
 # ─── DATA ─────────────────────────
-async def klines(sym):
- return await api.get("/api/v3/klines",{"symbol":sym,"interval":"1h","limit":200})
+async def klines(interval="1m"):
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{BASE}/api/v3/klines", params={
+            "symbol": SYMBOL,
+            "interval": interval,
+            "limit": 300
+        }) as r:
+            data = await r.json()
 
-def parse(k):
- return {
-  "c":[float(x[4]) for x in k],
-  "h":[float(x[2]) for x in k],
-  "l":[float(x[3]) for x in k],
-  "v":[float(x[5]) for x in k],
- }
+    return np.array([float(x[4]) for x in data])
 
-# ─── BALANCE ──────────────────────
-async def balance():
- acc=await api.get("/api/v3/account",{},True)
- for b in acc["balances"]:
-  if b["asset"]=="USDT":
-   return float(b["free"])
- return 0
+# ─── FEATURES ─────────────────────
+def features(c):
+    returns = np.diff(c[-10:]) / c[-10:-1]
+    trend = (np.mean(c[-20:]) - np.mean(c[-50:])) / np.mean(c[-50:])
+    macro = (np.mean(c[-50:]) - np.mean(c[-200:])) / np.mean(c[-200:])
+    vol = np.std(c[-20:])
+    momentum = returns.mean()
 
-# ─── POSITION SIZE ────────────────
-def size(price):
- base=state["balance"]*0.01
- if state["drawdown"]>0.1: base*=0.5
- return base/price
+    return np.array([trend, macro, vol, momentum])
 
-# ─── TRADE ────────────────────────
-async def buy(sym,qty):
- return await api.post("/api/v3/order",{"symbol":sym,"side":"BUY","type":"MARKET","quantity":f"{qty:.6f}"})
+# ─── REGIME ───────────────────────
+def market_regime(c):
+    trend = abs((np.mean(c[-50:]) - np.mean(c[-200:])) / np.mean(c[-200:]))
+    vol = np.std(c[-50:])
 
-async def sell(sym,qty):
- return await api.post("/api/v3/order",{"symbol":sym,"side":"SELL","type":"MARKET","quantity":f"{qty:.6f}"})
+    if trend > 0.012 and vol > 0.006:
+        return "strong_trend"
+    if trend > 0.006:
+        return "weak_trend"
+    return "range"
 
-# ─── CORE ─────────────────────────
-async def run():
- while True:
-  try:
-   state["balance"]=await balance()
+# ─── MODEL ────────────────────────
+def train(c):
+    X, y = [], []
+    for i in range(100, len(c)-1):
+        X.append(features(c[:i]))
+        y.append(1 if c[i+1] > c[i] else 0)
 
-   if state["initial"]==0: state["initial"]=state["balance"]
-   if state["balance"]>state["peak"]: state["peak"]=state["balance"]
+    rf = RandomForestClassifier(n_estimators=200)
+    gb = GradientBoostingClassifier(n_estimators=200)
 
-   state["drawdown"]=(state["peak"]-state["balance"])/state["peak"] if state["peak"] else 0
+    rf.fit(X, y)
+    gb.fit(X, y)
 
-   if state["drawdown"]>0.25:
-    state["kill"]=True
+    return rf, gb
 
-   if state["kill"]:
-    await asyncio.sleep(60)
-    continue
+def predict(models, c):
+    rf, gb = models
+    f = features(c).reshape(1, -1)
+    return (rf.predict_proba(f)[0][1] + gb.predict_proba(f)[0][1]) / 2
 
-   for sym in PAIRS:
-    if len(state["open"])>=3: break
+# ─── RISCO ────────────────────────
+def risk_multiplier():
+    return max(0.3, 1 - (state["loss_streak"] * 0.2))
 
-    k=await klines(sym)
-    d=parse(k)
+def position_size(price):
+    return (state["balance"] * BASE_RISK * risk_multiplier()) / price
 
-    f=feats(d["c"],d["h"],d["l"],d["v"])
+def risk_block():
+    if (state["balance"] - state["daily_start"]) / state["daily_start"] <= -MAX_DAILY_LOSS:
+        return True
+    return False
 
-    votes=sum([await b(sym,d) for b in BOTS])
+# ─── TRAILING ─────────────────────
+def trailing(entry, price):
+    return max(entry, price * (1 - SLIPPAGE))
 
-    prob=ai.p(f)
+# ─── EXECUÇÃO ─────────────────────
+async def execute_trade(side, price):
+    if not AUTO_LIVE:
+        return
 
-    if votes>=2 and prob>0.6:
-     price=d["c"][-1]
-     qty=size(price)
+    # aqui conectarias à Binance real
+    await notify(f"⚡ EXEC {side} @ {price}")
 
-     a=atr(d["h"],d["l"],d["c"])
-     sl=price-2*a
-     tp=price+3*a
+# ─── LIVE ─────────────────────────
+async def live():
 
-     r=await buy(sym,qty)
-     if r.get("orderId"):
-      state["open"].append({"sym":sym,"qty":qty,"sl":sl,"tp":tp,"f":f,"entry":price})
+    await notify("🚀 Bot iniciado")
 
-  except Exception as e:
-   log.error(e)
+    while True:
+        try:
 
-  await asyncio.sleep(60)
+            if risk_block():
+                await notify("⛔ Bloqueado por risco diário")
+                await asyncio.sleep(300)
+                continue
 
-# ─── MONITOR ──────────────────────
-async def monitor():
- while True:
-  for t in state["open"][:]:
-   k=await klines(t["sym"])
-   price=float(k[-1][4])
+            if state["loss_streak"] >= MAX_LOSS_STREAK:
+                await notify("⛔ Stop por perdas consecutivas")
+                await asyncio.sleep(600)
+                continue
 
-   if price<=t["sl"]:
-    await sell(t["sym"],t["qty"])
-    ai.u(t["f"],0)
-    state["open"].remove(t)
+            c1 = await klines("1m")
+            c5 = await klines("5m")
 
-   elif price>=t["tp"]:
-    await sell(t["sym"],t["qty"])
-    ai.u(t["f"],1)
-    state["open"].remove(t)
+            if state["model"] is None:
+                state["model"] = train(c1)
 
-  await asyncio.sleep(10)
+            prob = predict(state["model"], c1)
+
+            regime = market_regime(c1)
+
+            score = 0
+            if prob > 0.8: score += 2
+            if regime == "strong_trend": score += 2
+
+            price = c1[-1]
+
+            # ─── ENTRADA ───
+            if state["position"] is None:
+
+                if score >= 3:
+
+                    state["position"] = price
+                    state["entry"] = price
+
+                    await execute_trade("BUY", price)
+                    await notify(f"📈 BUY {price}")
+
+            # ─── SAÍDA ───
+            else:
+
+                entry = state["entry"]
+
+                stop = entry * (1 - STOP_LOSS_PCT)
+                take = entry * (1 + TAKE_PROFIT_PCT)
+
+                state["entry"] = trailing(entry, price)
+
+                if price <= stop:
+
+                    pnl = (price - entry) / entry
+                    state["balance"] *= (1 + pnl)
+
+                    state["position"] = None
+                    state["loss_streak"] += 1
+
+                    await execute_trade("SELL", price)
+                    await notify(f"🔴 STOP {price}")
+
+                elif price >= take:
+
+                    pnl = (price - entry) / entry
+                    state["balance"] *= (1 + pnl)
+
+                    state["position"] = None
+                    state["loss_streak"] = 0
+
+                    await execute_trade("SELL", price)
+                    await notify(f"🟢 TP {price}")
+
+        except Exception as e:
+            await notify(f"⚠️ ERRO: {e}")
+
+        await asyncio.sleep(30)
 
 # ─── MAIN ─────────────────────────
 async def main():
- await asyncio.gather(run(),monitor())
+    await live()
 
-if __name__=="__main__":
- asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
