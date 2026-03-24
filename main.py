@@ -46,16 +46,41 @@ async def notify(msg):
             pass
 
 # ─── DATA ─────────────────────────
-async def klines(interval="1m"):
+    
+    async def klines(interval="1m"):
+
     async with aiohttp.ClientSession() as s:
+
         async with s.get(f"{BASE}/api/v3/klines", params={
             "symbol": SYMBOL,
             "interval": interval,
             "limit": 300
         }) as r:
+
             data = await r.json()
 
-    return np.array([float(x[4]) for x in data])
+    # 🔴 validação
+    if not isinstance(data, list):
+        raise Exception(f"Resposta inválida da Binance: {data}")
+
+    if len(data) == 0:
+        raise Exception("Sem dados recebidos")
+
+    closes = []
+
+    for x in data:
+        if len(x) < 5:
+            continue  # ignora dados inválidos
+
+        try:
+            closes.append(float(x[4]))
+        except:
+            continue
+
+    if len(closes) < 10:
+        raise Exception("Poucos dados válidos")
+
+    return np.array(closes)
 
 # ─── FEATURES ─────────────────────
 def features(c):
