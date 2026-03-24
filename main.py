@@ -9,7 +9,7 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CHAT_ID = os.getenv("CHAT_ID")
 
 AUTO_LIVE = os.getenv("AUTO_LIVE", "false").lower() == "true"
 
