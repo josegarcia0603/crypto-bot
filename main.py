@@ -85,6 +85,45 @@ async def notify(msg):
 
     return np.array(closes)
 
+import sqlite3
+
+conn = sqlite3.connect("trades.db")
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY,
+    side TEXT,
+    price REAL,
+    timestamp REAL
+)
+""")
+
+conn.commit()
+
+import sqlite3
+
+conn = sqlite3.connect("trades.db")
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY,
+    side TEXT,
+    price REAL,
+    timestamp REAL
+)
+""")
+
+conn.commit()
+
+cursor.execute(
+    "INSERT INTO trades (side, price, timestamp) VALUES (?, ?, ?)",
+    (side, price, time.time())
+)
+
+conn.commit()
+
 # ─── FEATURES ─────────────────────
 def features(c):
     returns = np.diff(c[-10:]) / c[-10:-1]
