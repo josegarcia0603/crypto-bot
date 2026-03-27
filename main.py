@@ -57,8 +57,8 @@ async def notify(msg):
                 print(f"[TELEGRAM ERRO] {result}")
     except Exception as e:
         print(f"[TELEGRAM ERRO] {e}")
-        async def send_menu():
-    keyboard = {"inline_keyboard": [
+        async def send_menu(): 
+            keyboard = {"inline_keyboard": [
             [{"text": "📊 Dashboard", "callback_data": "dashboard"}],
             [{"text": "💹 Trades Abertos", "callback_data": "trades_abertos"}],
             [{"text": "🔍 Analisar Pares", "callback_data": "analisa_pares"}],
