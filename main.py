@@ -57,57 +57,7 @@ async def notify(msg):
                 print(f"[TELEGRAM ERRO] {result}")
     except Exception as e:
         print(f"[TELEGRAM ERRO] {e}")
-        async def send_menu(): 
-            keyboard = {"inline_keyboard": [
-            [{"text": "📊 Dashboard", "callback_data": "dashboard"}],
-            [{"text": "💹 Trades Abertos", "callback_data": "trades_abertos"}],
-            [{"text": "🔍 Analisar Pares", "callback_data": "analisa_pares"}],
-            [{"text": "💰 Saldo", "callback_data": "saldo"}],
-            [
-                {"text": "⏸ Pausar", "callback_data": "pausar"},
-                {"text": "▶️ Retomar", "callback_data": "retomar"}
-            ],
-            [{"text": "❌ Fechar Trades", "callback_data": "fechar_trades"}]
-        ]
-    }
-    await notify("🤖 Menu do Bot ativo!\nClique em qualquer botão.")
-    async with aiohttp.ClientSession() as s:
-        await s.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": "Escolha uma opção:", "reply_markup": keyboard}
-        )
-# ─── HANDLER DE BOTÕES ──────────────────────────────────
-async def handle_callback(update):
-    if "callback_query" not in update:
-        return
-    data = update["callback_query"]["data"]
 
-    if data == "dashboard":
-        msg = f"📊 Dashboard:\nSaldo: ${state['balance']:.2f}\nPosition: {state['position'] or 'Nenhuma'}\nLoss streak: {state['loss_streak']}"
-        await notify(msg)
-    elif data == "trades_abertos":
-        trades = get_trades()
-        if trades:
-            msg = "💹 Últimos trades:\n"
-            for t in trades:
-                ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t[2]))
-                msg += f"{ts} | {t[0]} @ {t[1]:.2f}\n"
-        else:
-            msg = "💹 Nenhum trade aberto."
-        await notify(msg)
-    elif data == "analisa_pares":
-        await notify("🔍 Analisando pares... (em breve funcional)")
-    elif data == "saldo":
-        await notify(f"💰 Saldo atual: ${state['balance']:.2f}")
-    elif data == "pausar":
-        state["paused"] = True
-        await notify("⏸ Bot pausado.")
-    elif data == "retomar":
-        state["paused"] = False
-        await notify("▶️ Bot retomado.")
-    elif data == "fechar_trades":
-        state["position"] = None
-        await notify("❌ Todos trades fechados.")
 # ─── BASE DE DADOS ──────────────────────────────────────
 conn = sqlite3.connect("trades.db")
 cursor = conn.cursor()
