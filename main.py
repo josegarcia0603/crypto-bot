@@ -1,38 +1,39 @@
-import asyncio, os, aiohttp, numpy as np
+import asyncio
+import os
+import time
+import sqlite3
+import aiohttp
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 
-# ─── CONFIG ───────────────────────
-BASE = "https://api.binance.com"
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+BASE   = "https://api.binance.com"
 SYMBOL = "BTCUSDT"
 
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID            = os.getenv("TELEGRAM_CHAT_ID")
+AUTO_LIVE          = os.getenv("AUTO_LIVE", "false").lower() == "true"
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-AUTO_LIVE = os.getenv("AUTO_LIVE", "false").lower() == "true"
-
-STOP_LOSS_PCT = 0.008
+STOP_LOSS_PCT   = 0.008
 TAKE_PROFIT_PCT = 0.025
-
-BASE_RISK = 0.01
-MAX_DAILY_LOSS = 0.04
+BASE_RISK       = 0.01
+MAX_DAILY_LOSS  = 0.04
 MAX_LOSS_STREAK = 4
-
-SLIPPAGE = 0.0005
+SLIPPAGE        = 0.0005
 
 state = {
-    "model": None,
-    "position": None,
-    "entry": None,
-    "balance": 1000,
+    "model":       None,
+    "position":    None,
+    "entry":       None,
+    "balance":     1000,
     "daily_start": 1000,
     "loss_streak": 0,
-    "daily_pnl": 0
+    "daily_pnl":   0
 }
 
-# ─── TELEGRAM ─────────────────────
+# ─── TELEGRAM ─────────────────────────────────────────────────────────────────
 async def notify(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print(f"[LOG] {msg}")
@@ -42,8 +43,8 @@ async def notify(msg):
             resp = await s.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                 json={
-                    "chat_id": CHAT_ID,
-                    "text": msg,
+                    "chat_id":    CHAT_ID,
+                    "text":       msg,
                     "parse_mode": "HTML"
                 },
                 timeout=aiohttp.ClientTimeout(total=10)
@@ -56,36 +57,48 @@ async def notify(msg):
     except Exception as e:
         print(f"[TELEGRAM ERRO] {e}")
 
-# ─── DATA ─────────────────────────
-    
-    async def klines(interval="1m"):
+# ─── BASE DE DADOS ────────────────────────────────────────────────────────────
+conn   = sqlite3.connect("trades.db")
+cursor = conn.cursor()
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS trades (
+        id        INTEGER PRIMARY KEY,
+        side      TEXT,
+        price     REAL,
+        timestamp REAL
+    )
+""")
+conn.commit()
 
+def save_trade(side, price):
+    cursor.execute(
+        "INSERT INTO trades (side, price, timestamp) VALUES (?, ?, ?)",
+        (side, price, time.time())
+    )
+    conn.commit()
+
+# ─── DATA ─────────────────────────────────────────────────────────────────────
+async def klines(interval="1m"):
     async with aiohttp.ClientSession() as s:
-
         async with s.get(f"{BASE}/api/v3/klines", params={
-            "symbol": SYMBOL,
+            "symbol":   SYMBOL,
             "interval": interval,
-            "limit": 300
+            "limit":    300
         }) as r:
-
             try:
                 data = await r.json()
             except Exception:
                 raise Exception("Resposta não é JSON válido")
 
-    # 🔴 detectar erro da Binance
     if isinstance(data, dict):
         raise Exception(f"Erro da Binance: {data}")
-
     if not isinstance(data, list):
         raise Exception(f"Formato inesperado: {type(data)}")
 
     closes = []
-
     for x in data:
         if not isinstance(x, list) or len(x) < 5:
             continue
-
         try:
             closes.append(float(x[4]))
         except:
@@ -96,79 +109,35 @@ async def notify(msg):
 
     return np.array(closes)
 
-import sqlite3
-
-conn = sqlite3.connect("trades.db")
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS trades (
-    id INTEGER PRIMARY KEY,
-    side TEXT,
-    price REAL,
-    timestamp REAL
-)
-""")
-
-conn.commit()
-
-import sqlite3
-
-conn = sqlite3.connect("trades.db")
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS trades (
-    id INTEGER PRIMARY KEY,
-    side TEXT,
-    price REAL,
-    timestamp REAL
-)
-""")
-
-conn.commit()
-
-cursor.execute(
-    "INSERT INTO trades (side, price, timestamp) VALUES (?, ?, ?)",
-    (side, price, time.time())
-)
-
-conn.commit()
-
-# ─── FEATURES ─────────────────────
+# ─── FEATURES (Machine Learning) ─────────────────────────────────────────────
 def features(c):
-    returns = np.diff(c[-10:]) / c[-10:-1]
-    trend = (np.mean(c[-20:]) - np.mean(c[-50:])) / np.mean(c[-50:])
-    macro = (np.mean(c[-50:]) - np.mean(c[-200:])) / np.mean(c[-200:])
-    vol = np.std(c[-20:])
+    returns  = np.diff(c[-10:]) / c[-10:-1]
+    trend    = (np.mean(c[-20:]) - np.mean(c[-50:]))  / np.mean(c[-50:])
+    macro    = (np.mean(c[-50:]) - np.mean(c[-200:])) / np.mean(c[-200:])
+    vol      = np.std(c[-20:])
     momentum = returns.mean()
-
     return np.array([trend, macro, vol, momentum])
 
-# ─── REGIME ───────────────────────
+# ─── REGIME DE MERCADO ────────────────────────────────────────────────────────
 def market_regime(c):
     trend = abs((np.mean(c[-50:]) - np.mean(c[-200:])) / np.mean(c[-200:]))
-    vol = np.std(c[-50:])
-
+    vol   = np.std(c[-50:])
     if trend > 0.012 and vol > 0.006:
         return "strong_trend"
     if trend > 0.006:
         return "weak_trend"
     return "range"
 
-# ─── MODEL ────────────────────────
+# ─── MODELO ML (Random Forest + Gradient Boosting) ───────────────────────────
 def train(c):
     X, y = [], []
-    for i in range(100, len(c)-1):
+    for i in range(100, len(c) - 1):
         X.append(features(c[:i]))
-        y.append(1 if c[i+1] > c[i] else 0)
-
-    rf = RandomForestClassifier(n_estimators=200)
-    gb = GradientBoostingClassifier(n_estimators=200)
-
+        y.append(1 if c[i + 1] > c[i] else 0)
+    rf = RandomForestClassifier(n_estimators=200, random_state=42)
+    gb = GradientBoostingClassifier(n_estimators=200, random_state=42)
     rf.fit(X, y)
     gb.fit(X, y)
-
     return rf, gb
 
 def predict(models, c):
@@ -176,7 +145,7 @@ def predict(models, c):
     f = features(c).reshape(1, -1)
     return (rf.predict_proba(f)[0][1] + gb.predict_proba(f)[0][1]) / 2
 
-# ─── RISCO ────────────────────────
+# ─── GESTÃO DE RISCO ──────────────────────────────────────────────────────────
 def risk_multiplier():
     return max(0.3, 1 - (state["loss_streak"] * 0.2))
 
@@ -184,37 +153,32 @@ def position_size(price):
     return (state["balance"] * BASE_RISK * risk_multiplier()) / price
 
 def risk_block():
-    if (state["balance"] - state["daily_start"]) / state["daily_start"] <= -MAX_DAILY_LOSS:
-        return True
-    return False
+    return (state["balance"] - state["daily_start"]) / state["daily_start"] <= -MAX_DAILY_LOSS
 
-# ─── TRAILING ─────────────────────
+# ─── TRAILING STOP ────────────────────────────────────────────────────────────
 def trailing(entry, price):
     return max(entry, price * (1 - SLIPPAGE))
 
-# ─── EXECUÇÃO ─────────────────────
+# ─── EXECUÇÃO ─────────────────────────────────────────────────────────────────
 async def execute_trade(side, price):
+    save_trade(side, price)
     if not AUTO_LIVE:
         return
+    await notify(f"⚡ EXEC {side} @ {price:.2f}")
 
-    # aqui conectarias à Binance real
-    await notify(f"⚡ EXEC {side} @ {price}")
-
-# ─── LIVE ─────────────────────────
+# ─── LOOP PRINCIPAL ───────────────────────────────────────────────────────────
 async def live():
-
-    await notify("🚀 Bot iniciado")
+    await notify("🚀 <b>Bot iniciado!</b>\nSímbolo: BTCUSDT\nModo: " + ("LIVE" if AUTO_LIVE else "SIMULAÇÃO"))
 
     while True:
         try:
-
             if risk_block():
-                await notify("⛔ Bloqueado por risco diário")
+                await notify("⛔ Bloqueado — risco diário máximo atingido")
                 await asyncio.sleep(300)
                 continue
 
             if state["loss_streak"] >= MAX_LOSS_STREAK:
-                await notify("⛔ Stop por perdas consecutivas")
+                await notify(f"⛔ Stop — {MAX_LOSS_STREAK} perdas consecutivas")
                 await asyncio.sleep(600)
                 continue
 
@@ -222,67 +186,71 @@ async def live():
             c5 = await klines("5m")
 
             if state["model"] is None:
+                await notify("🧠 A treinar modelo ML... aguarda ~30s")
                 state["model"] = train(c1)
+                await notify("✅ Modelo treinado! A analisar mercado...")
 
-            prob = predict(state["model"], c1)
-
+            prob   = predict(state["model"], c1)
             regime = market_regime(c1)
+            price  = c1[-1]
 
             score = 0
-            if prob > 0.8: score += 2
+            if prob > 0.8:               score += 2
             if regime == "strong_trend": score += 2
 
-            price = c1[-1]
-
-            # ─── ENTRADA ───
+            # ─── ABERTURA ───
             if state["position"] is None:
-
                 if score >= 3:
-
                     state["position"] = price
-                    state["entry"] = price
-
+                    state["entry"]    = price
                     await execute_trade("BUY", price)
-                    await notify(f"📈 BUY {price}")
+                    await notify(
+                        f"📈 <b>BUY</b> @ <b>{price:.2f}</b>\n"
+                        f"Score: {score}/4 | Regime: {regime}\n"
+                        f"Prob ML: {prob:.1%}\n"
+                        f"SL: {price*(1-STOP_LOSS_PCT):.2f} | TP: {price*(1+TAKE_PROFIT_PCT):.2f}\n"
+                        f"Saldo: ${state['balance']:.2f}"
+                    )
 
-            # ─── SAÍDA ───
+            # ─── GESTÃO ───
             else:
-
                 entry = state["entry"]
-
-                stop = entry * (1 - STOP_LOSS_PCT)
-                take = entry * (1 + TAKE_PROFIT_PCT)
-
+                stop  = entry * (1 - STOP_LOSS_PCT)
+                take  = entry * (1 + TAKE_PROFIT_PCT)
                 state["entry"] = trailing(entry, price)
 
                 if price <= stop:
-
                     pnl = (price - entry) / entry
-                    state["balance"] *= (1 + pnl)
-
-                    state["position"] = None
+                    state["balance"]     *= (1 + pnl)
+                    state["position"]     = None
                     state["loss_streak"] += 1
-
                     await execute_trade("SELL", price)
-                    await notify(f"🔴 STOP {price}")
+                    await notify(
+                        f"🔴 <b>STOP LOSS</b> @ {price:.2f}\n"
+                        f"PnL: {pnl*100:.2f}%\n"
+                        f"Saldo: ${state['balance']:.2f}\n"
+                        f"Perdas consecutivas: {state['loss_streak']}"
+                    )
 
                 elif price >= take:
-
                     pnl = (price - entry) / entry
-                    state["balance"] *= (1 + pnl)
-
-                    state["position"] = None
-                    state["loss_streak"] = 0
-
+                    state["balance"]     *= (1 + pnl)
+                    state["position"]     = None
+                    state["loss_streak"]  = 0
                     await execute_trade("SELL", price)
-                    await notify(f"🟢 TP {price}")
+                    await notify(
+                        f"🟢 <b>TAKE PROFIT</b> @ {price:.2f}\n"
+                        f"PnL: {pnl*100:.2f}%\n"
+                        f"Saldo: ${state['balance']:.2f}"
+                    )
 
         except Exception as e:
             await notify(f"⚠️ ERRO: {e}")
+            print(f"[ERRO] {e}")
 
         await asyncio.sleep(30)
 
-# ─── MAIN ─────────────────────────
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
 async def main():
     await live()
 
