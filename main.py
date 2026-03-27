@@ -36,27 +36,9 @@ state = {
     "daily_start": 1000,
     "loss_streak": 0,
     "daily_pnl":   0,
-    "BASE":        None
+    "BASE":        None,
+    "paused":      False
 }
-
-# ─── TELEGRAM ───────────────────────────────────────────
-async def notify(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print(f"[LOG] {msg}")
-        return
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as s:
-            resp = await s.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-                timeout=aiohttp.ClientTimeout(total=10)
-            )
-            result = await resp.json()
-            if not result.get("ok"):
-                print(f"[TELEGRAM ERRO] {result}")
-    except Exception as e:
-        print(f"[TELEGRAM ERRO] {e}")
 
 # ─── BASE DE DADOS ──────────────────────────────────────
 conn = sqlite3.connect("trades.db")
@@ -78,7 +60,83 @@ def save_trade(side, price):
     )
     conn.commit()
 
-# ─── HELPER: REQUEST COM FAILOVER ───────────────────────
+def get_trades():
+    cursor.execute("SELECT side, price, timestamp FROM trades ORDER BY id DESC LIMIT 10")
+    return cursor.fetchall()
+
+# ─── TELEGRAM ───────────────────────────────────────────
+async def notify(msg):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print(f"[LOG] {msg}")
+        return
+    try:
+        async with aiohttp.ClientSession() as s:
+            resp = await s.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
+                timeout=aiohttp.ClientTimeout(total=10)
+            )
+            result = await resp.json()
+            if not result.get("ok"):
+                print(f"[TELEGRAM ERRO] {result}")
+    except Exception as e:
+        print(f"[TELEGRAM ERRO] {e}")
+
+async def send_menu():
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "📊 Dashboard", "callback_data": "dashboard"}],
+            [{"text": "💹 Trades Abertos", "callback_data": "trades_abertos"}],
+            [{"text": "🔍 Analisar Pares", "callback_data": "analisa_pares"}],
+            [{"text": "💰 Saldo", "callback_data": "saldo"}],
+            [
+                {"text": "⏸ Pausar", "callback_data": "pausar"},
+                {"text": "▶️ Retomar", "callback_data": "retomar"}
+            ],
+            [{"text": "❌ Fechar Trades", "callback_data": "fechar_trades"}]
+        ]
+    }
+    await notify("🤖 Menu do Bot ativo!\nClique em qualquer botão.")
+    async with aiohttp.ClientSession() as s:
+        await s.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": "Escolha uma opção:", "reply_markup": keyboard}
+        )
+
+# ─── HANDLER DE BOTÕES ──────────────────────────────────
+async def handle_callback(update):
+    if "callback_query" not in update:
+        return
+    data = update["callback_query"]["data"]
+
+    if data == "dashboard":
+        msg = f"📊 Dashboard:\nSaldo: ${state['balance']:.2f}\nPosition: {state['position'] or 'Nenhuma'}\nLoss streak: {state['loss_streak']}"
+        await notify(msg)
+    elif data == "trades_abertos":
+        trades = get_trades()
+        if trades:
+            msg = "💹 Últimos trades:\n"
+            for t in trades:
+                ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t[2]))
+                msg += f"{ts} | {t[0]} @ {t[1]:.2f}\n"
+        else:
+            msg = "💹 Nenhum trade aberto."
+        await notify(msg)
+    elif data == "analisa_pares":
+        await notify("🔍 Analisando pares... (em breve funcional)")
+    elif data == "saldo":
+        await notify(f"💰 Saldo atual: ${state['balance']:.2f}")
+    elif data == "pausar":
+        state["paused"] = True
+        await notify("⏸ Bot pausado.")
+    elif data == "retomar":
+        state["paused"] = False
+        await notify("▶️ Bot retomado.")
+    elif data == "fechar_trades":
+        state["position"] = None
+        await notify("❌ Todos trades fechados.")
+
+# ─── HELPER BINANCE COM FAILOVER ───────────────────────
 async def binance_request(path, params=None):
     last_error = None
     for base in ENDPOINTS:
@@ -152,10 +210,14 @@ async def execute_trade(side, price):
 
 # ─── LOOP PRINCIPAL ────────────────────────────────────
 async def live():
+    await send_menu()
     await notify(f"🚀 Bot iniciado! Símbolo: {SYMBOL} | Modo: {'LIVE' if AUTO_LIVE else 'SIMULAÇÃO'}")
 
     while True:
         try:
+            if state["paused"]:
+                await asyncio.sleep(30)
+                continue
             if risk_block():
                 await notify("⛔ Bloqueado — risco diário máximo atingido")
                 await asyncio.sleep(300)
@@ -215,6 +277,10 @@ async def live():
 
 # ─── MAIN ──────────────────────────────────────────────
 async def main():
+    await live()
+
+if __name__ == "__main__":
+    asyncio.run(main())
     await live()
 
 if __name__ == "__main__":
