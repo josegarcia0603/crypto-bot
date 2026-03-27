@@ -57,6 +57,26 @@ async def notify(msg):
                 print(f"[TELEGRAM ERRO] {result}")
     except Exception as e:
         print(f"[TELEGRAM ERRO] {e}")
+        async def send_menu():
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "📊 Dashboard", "callback_data": "dashboard"}],
+            [{"text": "💹 Trades Abertos", "callback_data": "trades_abertos"}],
+            [{"text": "🔍 Analisar Pares", "callback_data": "analisa_pares"}],
+            [{"text": "💰 Saldo", "callback_data": "saldo"}],
+            [
+                {"text": "⏸ Pausar", "callback_data": "pausar"},
+                {"text": "▶️ Retomar", "callback_data": "retomar"}
+            ],
+            [{"text": "❌ Fechar Trades", "callback_data": "fechar_trades"}]
+        ]
+    }
+    await notify("🤖 Menu do Bot ativo!\nClique em qualquer botão.")
+    async with aiohttp.ClientSession() as s:
+        await s.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": "Escolha uma opção:", "reply_markup": keyboard}
+        )
 # ─── HANDLER DE BOTÕES ──────────────────────────────────
 async def handle_callback(update):
     if "callback_query" not in update:
