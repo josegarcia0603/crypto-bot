@@ -36,33 +36,8 @@ state = {
     "daily_start": 1000,
     "loss_streak": 0,
     "daily_pnl":   0,
-    "BASE":        None,
-    "paused":      False
+    "BASE":        None
 }
-
-# ─── BASE DE DADOS ──────────────────────────────────────
-conn = sqlite3.connect("trades.db")
-cursor = conn.cursor()
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY,
-        side TEXT,
-        price REAL,
-        timestamp REAL
-    )
-""")
-conn.commit()
-
-def save_trade(side, price):
-    cursor.execute(
-        "INSERT INTO trades (side, price, timestamp) VALUES (?, ?, ?)",
-        (side, price, time.time())
-    )
-    conn.commit()
-
-def get_trades():
-    cursor.execute("SELECT side, price, timestamp FROM trades ORDER BY id DESC LIMIT 10")
-    return cursor.fetchall()
 
 # ─── TELEGRAM ───────────────────────────────────────────
 async def notify(msg):
@@ -70,6 +45,7 @@ async def notify(msg):
         print(f"[LOG] {msg}")
         return
     try:
+        import aiohttp
         async with aiohttp.ClientSession() as s:
             resp = await s.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -81,28 +57,6 @@ async def notify(msg):
                 print(f"[TELEGRAM ERRO] {result}")
     except Exception as e:
         print(f"[TELEGRAM ERRO] {e}")
-
-async def send_menu():
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "📊 Dashboard", "callback_data": "dashboard"}],
-            [{"text": "💹 Trades Abertos", "callback_data": "trades_abertos"}],
-            [{"text": "🔍 Analisar Pares", "callback_data": "analisa_pares"}],
-            [{"text": "💰 Saldo", "callback_data": "saldo"}],
-            [
-                {"text": "⏸ Pausar", "callback_data": "pausar"},
-                {"text": "▶️ Retomar", "callback_data": "retomar"}
-            ],
-            [{"text": "❌ Fechar Trades", "callback_data": "fechar_trades"}]
-        ]
-    }
-    await notify("🤖 Menu do Bot ativo!\nClique em qualquer botão.")
-    async with aiohttp.ClientSession() as s:
-        await s.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": "Escolha uma opção:", "reply_markup": keyboard}
-        )
-
 # ─── HANDLER DE BOTÕES ──────────────────────────────────
 async def handle_callback(update):
     if "callback_query" not in update:
@@ -135,8 +89,27 @@ async def handle_callback(update):
     elif data == "fechar_trades":
         state["position"] = None
         await notify("❌ Todos trades fechados.")
+# ─── BASE DE DADOS ──────────────────────────────────────
+conn = sqlite3.connect("trades.db")
+cursor = conn.cursor()
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY,
+        side TEXT,
+        price REAL,
+        timestamp REAL
+    )
+""")
+conn.commit()
 
-# ─── HELPER BINANCE COM FAILOVER ───────────────────────
+def save_trade(side, price):
+    cursor.execute(
+        "INSERT INTO trades (side, price, timestamp) VALUES (?, ?, ?)",
+        (side, price, time.time())
+    )
+    conn.commit()
+
+# ─── HELPER: REQUEST COM FAILOVER ───────────────────────
 async def binance_request(path, params=None):
     last_error = None
     for base in ENDPOINTS:
@@ -210,14 +183,10 @@ async def execute_trade(side, price):
 
 # ─── LOOP PRINCIPAL ────────────────────────────────────
 async def live():
-    await send_menu()
     await notify(f"🚀 Bot iniciado! Símbolo: {SYMBOL} | Modo: {'LIVE' if AUTO_LIVE else 'SIMULAÇÃO'}")
 
     while True:
         try:
-            if state["paused"]:
-                await asyncio.sleep(30)
-                continue
             if risk_block():
                 await notify("⛔ Bloqueado — risco diário máximo atingido")
                 await asyncio.sleep(300)
@@ -277,10 +246,6 @@ async def live():
 
 # ─── MAIN ──────────────────────────────────────────────
 async def main():
-    await live()
-
-if __name__ == "__main__":
-    asyncio.run(main())
     await live()
 
 if __name__ == "__main__":
