@@ -23,20 +23,20 @@ AUTO_LIVE          = os.getenv("AUTO_LIVE", "false").lower() == "true"
 
 STOP_LOSS_PCT   = 0.008
 TAKE_PROFIT_PCT = 0.025
-BASE_RISK       = 0.01
+BASE_RISK        = 0.01
 MAX_DAILY_LOSS  = 0.04
 MAX_LOSS_STREAK = 4
-SLIPPAGE        = 0.0005
+SLIPPAGE         = 0.0005
 
 state = {
-    "model":       None,
-    "position":    None,
-    "entry":       None,
-    "balance":     1000,
+    "model":        None,
+    "position":     None,
+    "entry":        None,
+    "balance":      1000,
     "daily_start": 1000,
     "loss_streak": 0,
-    "daily_pnl":   0,
-    "BASE":        None
+    "daily_pnl":    0,
+    "BASE":         None
 }
 
 # ─── TELEGRAM ───────────────────────────────────────────
@@ -45,7 +45,6 @@ async def notify(msg):
         print(f"[LOG] {msg}")
         return
     try:
-        import aiohttp
         async with aiohttp.ClientSession() as s:
             resp = await s.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -97,14 +96,15 @@ async def binance_request(path, params=None):
 
 # ─── DATA ───────────────────────────────────────────────
 async def klines(interval="1m"):
-    data = await binance_request("/api/v3/klines", {"symbol": SYMBOL, "interval": interval, "limit": 300})
+    # Aumentado para 1000 para melhor treino do ML
+    data = await binance_request("/api/v3/klines", {"symbol": SYMBOL, "interval": interval, "limit": 1000})
     closes = []
     for x in data:
         if not isinstance(x, list) or len(x) < 5:
             continue
         try: closes.append(float(x[4]))
         except: continue
-    if len(closes) < 20:
+    if len(closes) < 200:
         raise Exception("Dados insuficientes da Binance")
     return np.array(closes)
 
@@ -118,19 +118,20 @@ def features(c):
     return np.array([trend, macro, vol, momentum])
 
 def market_regime(c):
+    # Sensibilidade ajustada para BTC em 2026
     trend = abs((np.mean(c[-50:]) - np.mean(c[-200:])) / np.mean(c[-200:]))
     vol = np.std(c[-50:])
-    if trend > 0.012 and vol > 0.006: return "strong_trend"
-    if trend > 0.006: return "weak_trend"
+    if trend > 0.008 and vol > 0.004: return "strong_trend"
+    if trend > 0.003: return "weak_trend"
     return "range"
 
 def train(c):
     X, y = [], []
-    for i in range(100, len(c) - 1):
+    for i in range(200, len(c) - 1):
         X.append(features(c[:i]))
         y.append(1 if c[i + 1] > c[i] else 0)
-    rf = RandomForestClassifier(n_estimators=200, random_state=42)
-    gb = GradientBoostingClassifier(n_estimators=200, random_state=42)
+    rf = RandomForestClassifier(n_estimators=150, max_depth=10, random_state=42)
+    gb = GradientBoostingClassifier(n_estimators=150, max_depth=5, random_state=42)
     rf.fit(X, y)
     gb.fit(X, y)
     return rf, gb
@@ -166,8 +167,7 @@ async def live():
                 continue
 
             c1 = await klines("1m")
-            c5 = await klines("5m")
-
+            
             if state["model"] is None:
                 await notify("🧠 A treinar modelo ML... aguarda ~30s")
                 state["model"] = train(c1)
@@ -177,15 +177,19 @@ async def live():
             regime = market_regime(c1)
             price = c1[-1]
             score = 0
-            if prob > 0.8: score += 2
+            
+            # --- LÓGICA DE SCORE OTIMIZADA ---
+            if prob > 0.65: score += 2       # Probabilidade realista
             if regime == "strong_trend": score += 2
-
+            if regime == "weak_trend": score += 1
+            
             if state["position"] is None:
-                if score >= 3:
+                # Score >= 2 permite entrar com sinal ML forte OU tendência + sinal leve
+                if score >= 2:
                     state["position"] = price
                     state["entry"] = price
                     await execute_trade("BUY", price)
-                    await notify(f"📈 BUY @ {price:.2f} | Score: {score}/4 | Regime: {regime} | Prob: {prob:.1%}")
+                    await notify(f"📈 BUY @ {price:.2f} | Score: {score} | Regime: {regime} | Prob: {prob:.1%}")
             else:
                 entry = state["entry"]
                 stop = entry*(1-STOP_LOSS_PCT)
@@ -198,7 +202,7 @@ async def live():
                     state["position"] = None
                     state["loss_streak"] += 1
                     await execute_trade("SELL", price)
-                    await notify(f"🔴 STOP LOSS @ {price:.2f} | PnL: {pnl*100:.2f}% | Saldo: {state['balance']:.2f} | Loss streak: {state['loss_streak']}")
+                    await notify(f"🔴 STOP LOSS @ {price:.2f} | PnL: {pnl*100:.2f}% | Saldo: {state['balance']:.2f}")
                 elif price >= take:
                     pnl = (price-entry)/entry
                     state["balance"] *= (1+pnl)
@@ -211,11 +215,12 @@ async def live():
             await notify(f"⚠️ ERRO: {e}")
             print(f"[ERRO] {e}")
 
-        await asyncio.sleep(30)
+        # Dormir 20s em vez de 30s para não perder janelas de oportunidade
+        await asyncio.sleep(20)
 
 # ─── MAIN ──────────────────────────────────────────────
 async def main():
     await live()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    async asyncio.run(main())
